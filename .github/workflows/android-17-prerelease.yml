@@ -23,10 +23,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      DEPS_DIR: ${{ runner.temp }}/kodi-depends
-      TARBALLS_DIR: ${{ runner.temp }}/kodi-tarballs
-      BUILD_DIR: ${{ runner.temp }}/kodi-build
-      KODI_ANDROID_STORE_FILE: ${{ runner.temp }}/kodi-debug.keystore
+      DEPS_DIR: /tmp/kodi-depends
+      TARBALLS_DIR: /tmp/kodi-tarballs
+      BUILD_DIR: /tmp/kodi-build
+      KODI_ANDROID_STORE_FILE: /tmp/kodi-debug.keystore
       KODI_ANDROID_STORE_PASSWORD: android
       KODI_ANDROID_KEY_ALIAS: androiddebugkey
       KODI_ANDROID_KEY_PASSWORD: android
