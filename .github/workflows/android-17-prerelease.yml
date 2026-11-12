@@ -1,0 +1,162 @@
+name: Kodi Android 17 - latest prerelease
+
+# This workflow lives on the fork's default branch so "Run workflow" is available,
+# but it NEVER builds the default/master source branch.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/android-17-prerelease.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kodi-android-17-prerelease
+  cancel-in-progress: false
+
+jobs:
+  build-arm64:
+    name: Build latest Kodi prerelease for Android 17 (ARM64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      DEPS_DIR: ${{ runner.temp }}/kodi-depends
+      TARBALLS_DIR: ${{ runner.temp }}/kodi-tarballs
+      BUILD_DIR: ${{ runner.temp }}/kodi-build
+      KODI_ANDROID_STORE_FILE: ${{ runner.temp }}/kodi-debug.keystore
+      KODI_ANDROID_STORE_PASSWORD: android
+      KODI_ANDROID_KEY_ALIAS: androiddebugkey
+      KODI_ANDROID_KEY_PASSWORD: android
+
+    steps:
+      - name: Resolve newest published upstream prerelease (never master)
+        id: prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$(gh api 'repos/xbmc/xbmc/releases?per_page=100' --jq '[.[] | select(.prerelease == true and .draft == false)] | sort_by(.published_at) | last | .tag_name')"
+          if [[ -z "$tag" || "$tag" == "null" ]]; then
+            echo "::error::No published prerelease found in xbmc/xbmc"
+            exit 1
+          fi
+          echo "Selected upstream prerelease: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check out ONLY the upstream prerelease tag
+        uses: actions/checkout@v4
+        with:
+          repository: xbmc/xbmc
+          ref: ${{ steps.prerelease.outputs.tag }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Confirm Android 17 (API 37) and release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'set(TARGET_SDK 37)' cmake/platform/android/android.cmake
+          cat version.txt
+          {
+            echo "### Kodi Android 17 / ARM64"
+            echo "Source: [${{ steps.prerelease.outputs.tag }}](https://github.com/xbmc/xbmc/releases/tag/${{ steps.prerelease.outputs.tag }})"
+            echo "Source is an immutable prerelease tag, **not** the master branch."
+            echo "Android compile/target SDK: 37; NDK: 28.2.13676358."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Free disk space for Kodi native toolchain
+        shell: bash
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/share/powershell /opt/hostedtoolcache/CodeQL
+          df -h .
+
+      - name: Install host build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf automake bison build-essential ccache cmake curl flex gawk \
+            git gperf lib32stdc++6 lib32z1 lib32z1-dev \
+            libcurl4-openssl-dev libtool make meson nasm ninja-build \
+            pkg-config python3 python3-dev unzip yasm zip zlib1g-dev
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK command-line tools
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 17 SDK, Build-Tools and Kodi NDK r28c
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install \
+            'platform-tools' \
+            'platforms;android-37.0' \
+            'build-tools;37.0.0' \
+            'ndk;28.2.13676358'
+          test -d "$ANDROID_HOME/platforms/android-37.0"
+          test -d "$ANDROID_HOME/ndk/28.2.13676358"
+          df -h .
+
+      - name: Generate test signing key for installable APK
+        shell: bash
+        run: |
+          keytool -genkeypair -noprompt \
+            -keystore "$KODI_ANDROID_STORE_FILE" \
+            -alias "$KODI_ANDROID_KEY_ALIAS" \
+            -storepass "$KODI_ANDROID_STORE_PASSWORD" \
+            -keypass "$KODI_ANDROID_KEY_PASSWORD" \
+            -dname 'CN=Kodi CI Debug, O=Personal Build, C=US' \
+            -keyalg RSA -keysize 2048 -validity 10000
+
+      - name: Bootstrap and configure Android ARM64 dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd tools/depends
+          ./bootstrap
+          ./configure \
+            --with-tarballs="$TARBALLS_DIR" \
+            --host=aarch64-linux-android \
+            --with-sdk-path="$ANDROID_HOME" \
+            --with-ndk-path="$ANDROID_HOME/ndk/28.2.13676358" \
+            --with-ndk-api=24 \
+            --prefix="$DEPS_DIR" \
+            --enable-debug=no
+
+      - name: Build Kodi dependencies
+        shell: bash
+        run: |
+          make -C tools/depends -j2
+
+      - name: Configure Kodi CMake
+        shell: bash
+        run: |
+          make -C tools/depends/target/cmakebuildsys BUILD_DIR="$BUILD_DIR"
+
+      - name: Compile Kodi for Android ARM64
+        shell: bash
+        run: |
+          cmake --build "$BUILD_DIR" --parallel 2
+
+      - name: Package and test-sign release APK
+        shell: bash
+        run: |
+          cmake --build "$BUILD_DIR" --target apk --parallel 2
+          ls -lh kodiapp-*.apk
+
+      - name: Upload Android 17 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: kodi-android17-${{ steps.prerelease.outputs.tag }}-arm64-v8a
+          path: kodiapp-*.apk
+          if-no-files-found: error
+          retention-days: 14
