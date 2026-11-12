@@ -90,8 +90,14 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK command-line tools
-        uses: android-actions/setup-android@v3
+      - name: Use runner's Android SDK command-line tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${ANDROID_HOME:?${ANDROID_HOME} must be set by the Ubuntu runner}"
+          command -v sdkmanager
+          sdkmanager --version
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install Android 17 SDK, Build-Tools and Kodi NDK r28c
         shell: bash
