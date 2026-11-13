@@ -1,4 +1,4 @@
-name: Kodi 22.0 RC2 Android 17 C1-Pro
+name: Kodi 22.0 RC2 Android 17 C1-Pro ISA
 
 # This workflow lives only on the branch created from Kodi 22.0 RC2.
 # No master branch source or CI changes are needed.
@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   build-arm64:
-    name: Build Kodi 22.0 RC2 for Android 17 C1-Pro (ARM64)
+    name: Build Kodi 22.0 RC2 for Android 17 (C1-Pro ISA subset, ARM64)
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
@@ -119,21 +119,25 @@ jobs:
           "$cc" --version | head -n 2
           printf 'int main(void) { return 0; }\n' > /tmp/kodi-cpu-probe.c
           arch="-march=armv9.3-a+sve2+sme2+nomops+nomemtag"
+          # Build a small test. LLVM 22+ supports C1-Pro tuning; NDK r30
+          # ships an older LLVM. Do not silently substitute another CPU.
           if "$cc" $arch -mtune=c1-pro -O3 -c /tmp/kodi-cpu-probe.c -o /tmp/kodi-cpu-probe.o 2>/tmp/kodi-cpu-probe.err; then
-            tune="-mtune=c1-pro"
-            echo "Native C1-Pro scheduling supported by this NDK clang."
+            flags="$arch -mtune=c1-pro -O3"
+            profile="c1pro-tuned"
+            echo "Clang accepts explicit C1-Pro tuning."
           else
-            # Clang 22 first added the C1-Pro CPU ID. NDK r30 may not know it.
-            echo "C1-Pro tuning unavailable; using closest supported predecessor Cortex-A725."
+            echo "::warning::NDK Clang does not support -mtune=c1-pro; building with available Armv9.3-A/SVE2/SME2 ISA only, without another CPU's tuning."
             cat /tmp/kodi-cpu-probe.err
-            tune="-mtune=cortex-a725"
-            "$cc" $arch "$tune" -O3 -c /tmp/kodi-cpu-probe.c -o /tmp/kodi-cpu-probe.o
+            flags="$arch -O3"
+            profile="armv9.3-isa-only"
+            "$cc" $flags -c /tmp/kodi-cpu-probe.c -o /tmp/kodi-cpu-probe.o
           fi
-          flags="$arch $tune -O3"
           echo "flags=$flags" >> "$GITHUB_OUTPUT"
+          echo "profile=$profile" >> "$GITHUB_OUTPUT"
           {
             echo "### C1-Pro architecture configuration"
             echo "Flags: \`$flags\`"
+            echo "Actual CPU optimization profile: \`$profile\`"
             echo "Reported HWCAP2: \`0x51a8bc9af3ff\` (SVE2/SME2 yes; MOPS/MTE no)."
             echo "No unsupported optional features enabled intentionally."
             echo "Build jobs use all available runner CPUs: $(nproc)."
@@ -191,7 +195,7 @@ jobs:
       - name: Upload Android 17 APK
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: kodi-android17-22.0rc2-Piers-c1-pro-arm64-v8a
+          name: kodi-android17-22.0rc2-Piers-${{ steps.cpu.outputs.profile }}-arm64-v8a
           path: kodiapp-*.apk
           if-no-files-found: error
           retention-days: 14
