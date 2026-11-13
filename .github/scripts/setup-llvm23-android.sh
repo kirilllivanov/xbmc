@@ -25,7 +25,9 @@ curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 \
 
 # SHA-256 published in GitHub's llvm/llvm-project release asset metadata.
 echo "c3107384835f788768f614db610e87fba7077f125ca950eb02a78bab0a308065  $ARCHIVE" | sha256sum --check -
-tar --zstd -xf "$ARCHIVE" -C "$LLVM_ROOT" --strip-components=1
+# Official LLVM 23 archive uses a 1 GiB zstd window; tar --zstd's
+# default 128 MiB decoder limit fails with "Frame requires too much memory".
+zstd -d --long=30 -c "$ARCHIVE" | tar -xf - -C "$LLVM_ROOT" --strip-components=1
 rm -f "$ARCHIVE"
 
 test -x "$LLVM_ROOT/bin/clang"
