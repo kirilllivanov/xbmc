@@ -6,6 +6,7 @@ list(APPEND PLATFORM_OPTIONAL_DEPS LibDovi)
 # Store SDK compile version
 set(TARGET_SDK 37)
 # Minimum supported SDK version
-set(TARGET_MINSDK 24)
+# This CI variant intentionally requires Android 17 or newer.
+set(TARGET_MINSDK 37)
 
 set(${CORE_SYSTEM_NAME}_SEARCH_CONFIG NO_DEFAULT_PATH CACHE STRING "")
