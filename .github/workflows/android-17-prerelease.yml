@@ -1,4 +1,4 @@
-name: Kodi 22.0 RC2 Android 17
+name: Kodi 22.0 RC2 Android 17 C1-Pro
 
 # This workflow lives only on the branch created from Kodi 22.0 RC2.
 # No master branch source or CI changes are needed.
@@ -6,20 +6,21 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - ci/android17-22.0rc2-Piers
+      - ci/android17-c1-pro-22.0rc2-Piers
     paths:
       - .github/workflows/android-17-prerelease.yml
+      - cmake/platform/android/android.cmake
 
 permissions:
   contents: read
 
 concurrency:
-  group: kodi-android-17-rc2
+  group: kodi-android-17-rc2-c1-pro
   cancel-in-progress: false
 
 jobs:
   build-arm64:
-    name: Build Kodi 22.0 RC2 for Android 17 (ARM64)
+    name: Build Kodi 22.0 RC2 for Android 17 C1-Pro (ARM64)
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
@@ -30,27 +31,29 @@ jobs:
       KODI_ANDROID_STORE_PASSWORD: android
       KODI_ANDROID_KEY_ALIAS: androiddebugkey
       KODI_ANDROID_KEY_PASSWORD: android
+      NDK_VERSION: '30.0.16248370'
 
     steps:
-      - name: Check out EXACT Kodi 22.0 RC2 prerelease commit from fork
+      - name: Check out C1-Pro branch based on Kodi 22.0 RC2
         uses: actions/checkout@v7.0.1
         with:
-          ref: d686683a55d50e576dd282f53fb2bf9914931b38
           persist-credentials: false
-          fetch-depth: 1
+          fetch-depth: 10
 
       - name: Confirm Android 17 (API 37) and release version
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = 'd686683a55d50e576dd282f53fb2bf9914931b38'
+          git merge-base --is-ancestor d686683a55d50e576dd282f53fb2bf9914931b38 HEAD
           grep -q 'set(TARGET_SDK 37)' cmake/platform/android/android.cmake
+          grep -q 'set(TARGET_MINSDK 37)' cmake/platform/android/android.cmake
           cat version.txt
           {
             echo "### Kodi Android 17 / ARM64"
             echo "Source: [22.0rc2-Piers](https://github.com/xbmc/xbmc/releases/tag/22.0rc2-Piers)"
-            echo "Source is an immutable prerelease tag, **not** the master branch."
-            echo "Android compile/target SDK: 37; NDK: 28.2.13676358."
+            echo "Source is a dedicated branch based on exact Kodi 22.0 RC2 prerelease commit; not master."
+            echo "Android min/compile/target SDK: 37; NDK: $NDK_VERSION."
+            echo "Build source commit: $(git rev-parse HEAD)."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Free disk space for Kodi native toolchain
@@ -91,7 +94,7 @@ jobs:
           sdkmanager --version
           echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Install Android 17 SDK, Build-Tools and Kodi NDK r28c
+      - name: Install Android 17 SDK, Build-Tools and NDK r30
         shell: bash
         run: |
           set -euo pipefail
@@ -99,10 +102,42 @@ jobs:
             'platform-tools' \
             'platforms;android-37.0' \
             'build-tools;37.0.0' \
-            'ndk;28.2.13676358'
+            "ndk;$NDK_VERSION"
           test -d "$ANDROID_HOME/platforms/android-37.0"
-          test -d "$ANDROID_HOME/ndk/28.2.13676358"
+          test -d "$ANDROID_HOME/ndk/$NDK_VERSION"
           df -h .
+
+      - name: Select C1-Pro ISA and safe tuning based on compiler support
+        id: cpu
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The device HWCAP2 (0x51a8bc9af3ff) reports SVE2 and SME2,
+          # but *not* MOPS or MTE. Never assume every optional C1-Pro feature.
+          cc="$ANDROID_HOME/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android37-clang"
+          test -x "$cc"
+          "$cc" --version | head -n 2
+          printf 'int main(void) { return 0; }\n' > /tmp/kodi-cpu-probe.c
+          arch="-march=armv9.3-a+sve2+sme2+nomops+nomemtag"
+          if "$cc" $arch -mtune=c1-pro -O3 -c /tmp/kodi-cpu-probe.c -o /tmp/kodi-cpu-probe.o 2>/tmp/kodi-cpu-probe.err; then
+            tune="-mtune=c1-pro"
+            echo "Native C1-Pro scheduling supported by this NDK clang."
+          else
+            # Clang 22 first added the C1-Pro CPU ID. NDK r30 may not know it.
+            echo "C1-Pro tuning unavailable; using closest supported predecessor Cortex-A725."
+            cat /tmp/kodi-cpu-probe.err
+            tune="-mtune=cortex-a725"
+            "$cc" $arch "$tune" -O3 -c /tmp/kodi-cpu-probe.c -o /tmp/kodi-cpu-probe.o
+          fi
+          flags="$arch $tune -O3"
+          echo "flags=$flags" >> "$GITHUB_OUTPUT"
+          {
+            echo "### C1-Pro architecture configuration"
+            echo "Flags: \`$flags\`"
+            echo "Reported HWCAP2: \`0x51a8bc9af3ff\` (SVE2/SME2 yes; MOPS/MTE no)."
+            echo "No unsupported optional features enabled intentionally."
+            echo "Build jobs use all available runner CPUs: $(nproc)."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Generate test signing key for installable APK
         shell: bash
@@ -125,15 +160,17 @@ jobs:
             --with-tarballs="$TARBALLS_DIR" \
             --host=aarch64-linux-android \
             --with-sdk-path="$ANDROID_HOME" \
-            --with-ndk-path="$ANDROID_HOME/ndk/28.2.13676358" \
-            --with-ndk-api=24 \
+            --with-ndk-path="$ANDROID_HOME/ndk/$NDK_VERSION" \
+            --with-ndk-api=37 \
+            --with-target-cflags="${{ steps.cpu.outputs.flags }}" \
+            --with-target-cxxflags="${{ steps.cpu.outputs.flags }}" \
             --prefix="$DEPS_DIR" \
             --enable-debug=no
 
       - name: Build Kodi dependencies
         shell: bash
         run: |
-          make -C tools/depends -j2
+          make -C tools/depends -j"$(nproc)"
 
       - name: Configure Kodi CMake
         shell: bash
@@ -143,18 +180,18 @@ jobs:
       - name: Compile Kodi for Android ARM64
         shell: bash
         run: |
-          cmake --build "$BUILD_DIR" --parallel 2
+          cmake --build "$BUILD_DIR" --parallel "$(nproc)"
 
       - name: Package and test-sign release APK
         shell: bash
         run: |
-          cmake --build "$BUILD_DIR" --target apk --parallel 2
+          cmake --build "$BUILD_DIR" --target apk --parallel "$(nproc)"
           ls -lh kodiapp-*.apk
 
       - name: Upload Android 17 APK
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: kodi-android17-22.0rc2-Piers-arm64-v8a
+          name: kodi-android17-22.0rc2-Piers-c1-pro-arm64-v8a
           path: kodiapp-*.apk
           if-no-files-found: error
           retention-days: 14
