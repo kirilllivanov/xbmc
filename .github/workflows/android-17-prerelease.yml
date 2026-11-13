@@ -166,8 +166,9 @@ jobs:
             --with-target-cxxflags="${{ steps.cpu.outputs.flags }}" \
             --prefix="$DEPS_DIR" \
             --enable-debug=no
-          grep -F "$ANDROID_LLVM_TOOLCHAIN/bin/aarch64-linux-android37-clang" tools/depends/Makefile.include
-          grep -F "$ANDROID_LLVM_TOOLCHAIN/bin/aarch64-linux-android37-clang++" tools/depends/Makefile.include
+          # Already inside tools/depends, which owns the generated Makefile.include.
+          grep -F "$ANDROID_LLVM_TOOLCHAIN/bin/aarch64-linux-android37-clang" Makefile.include
+          grep -F "$ANDROID_LLVM_TOOLCHAIN/bin/aarch64-linux-android37-clang++" Makefile.include
 
       - name: Build Kodi dependencies
         shell: bash
